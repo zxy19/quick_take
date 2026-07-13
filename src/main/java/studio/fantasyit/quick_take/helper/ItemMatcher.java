@@ -27,6 +27,48 @@ public class ItemMatcher {
         return true;
     }
 
+    public static float matchPriority(ItemStack stack, String pattern) {
+        if (pattern.isBlank()) {
+            return 1.0f;
+        }
+        String[] subPatterns = pattern.toLowerCase().split(" ");
+        float minScore = 1.0f;
+        for (String sub : subPatterns) {
+            float best = 0;
+            for (String text : getMatchTexts(stack)) {
+                float s = subsequenceScore(sub, text);
+                if (s > best) best = s;
+            }
+            if (best == 0 && JechIntegration.tryMatch(stack, sub)) {
+                best = 1.0f;
+            }
+            if (best == 0) return 0;
+            if (best < minScore) minScore = best;
+        }
+        return minScore;
+    }
+
+    private static float subsequenceScore(String pattern, String text) {
+        int pi = 0;
+        int maxConsecutive = 0;
+        int currentConsecutive = 0;
+        for (int ti = 0; ti < text.length() && pi < pattern.length(); ti++) {
+            if (text.charAt(ti) == pattern.charAt(pi)) {
+                pi++;
+                currentConsecutive++;
+                if (currentConsecutive > maxConsecutive) {
+                    maxConsecutive = currentConsecutive;
+                }
+            } else if (currentConsecutive > 0) {
+                currentConsecutive = 0;
+            }
+        }
+        if (pi < pattern.length()) {
+            return 0;
+        }
+        return (float) maxConsecutive / pattern.length();
+    }
+
     private static boolean matchesAny(List<String> texts, String pattern) {
         for (String text : texts) {
             if (isSubsequence(pattern, text)) {

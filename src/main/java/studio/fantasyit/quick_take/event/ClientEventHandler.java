@@ -29,7 +29,7 @@ public class ClientEventHandler {
         if (event.getScreen() instanceof CreativeModeInventoryScreen) {
             Minecraft mc = Minecraft.getInstance();
             if (mc.player != null && mc.player.hasInfiniteMaterials()) {
-                mc.setScreen(new QuickTakeScreen());
+                mc.setScreen(new QuickTakeScreen(String.valueOf(event.getCodePoint())));
             }
         }
     }

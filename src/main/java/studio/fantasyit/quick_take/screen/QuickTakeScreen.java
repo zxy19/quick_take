@@ -6,14 +6,17 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.ItemStack;
+import net.neoforged.neoforge.common.CreativeModeTabRegistry;
 import studio.fantasyit.quick_take.helper.InventoryHandler;
 import studio.fantasyit.quick_take.helper.ItemMatcher;
 
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -30,9 +33,15 @@ public class QuickTakeScreen extends Screen {
     private final List<ItemStack> filteredItems = new ArrayList<>();
     private int selectedIndex;
     private int scrollOffset;
+    private final String initialText;
 
     public QuickTakeScreen() {
+        this("");
+    }
+
+    public QuickTakeScreen(String initialText) {
         super(Component.empty());
+        this.initialText = initialText;
     }
 
     @Override
@@ -45,8 +54,21 @@ public class QuickTakeScreen extends Screen {
         this.setFocused(this.searchBox);
         this.addRenderableWidget(this.searchBox);
 
+        if (!initialText.isEmpty()) {
+            this.searchBox.setValue(initialText);
+        }
+
         if (allItems.isEmpty()) {
-            for (CreativeModeTab tab : CreativeModeTabs.allTabs()) {
+            CreativeModeTabs.tryRebuildTabContents(
+                    minecraft.level.enabledFeatures(),
+                    minecraft.player.canUseGameMasterBlocks(),
+                    minecraft.level.registryAccess()
+            );
+            List<CreativeModeTab> allTabs = CreativeModeTabRegistry.getSortedCreativeModeTabs().stream()
+                    .filter(t -> t.getType() == CreativeModeTab.Type.CATEGORY)
+                    .filter(CreativeModeTab::shouldDisplay)
+                    .toList();
+            for (CreativeModeTab tab : allTabs) {
                 Collection<ItemStack> items = tab.getDisplayItems();
                 for (ItemStack stack : items) {
                     if (!stack.isEmpty()) {
@@ -113,15 +135,15 @@ public class QuickTakeScreen extends Screen {
             }
         }
         InputConstants.Key key = InputConstants.getKey(event);
-        if (key.equals(InputConstants.KEY_UP)) {
+        if (key.getValue() == InputConstants.KEY_UP) {
             navigateUp();
             return true;
         }
-        if (key.equals(InputConstants.KEY_DOWN)) {
+        if (key.getValue() == InputConstants.KEY_DOWN) {
             navigateDown();
             return true;
         }
-        if (key.equals(InputConstants.KEY_RETURN) || key.equals(InputConstants.KEY_NUMPADENTER)) {
+        if (key.getValue() == InputConstants.KEY_RETURN || key.getValue() == InputConstants.KEY_NUMPADENTER) {
             selectCurrent();
             return true;
         }
@@ -137,6 +159,25 @@ public class QuickTakeScreen extends Screen {
             }
         }
         return super.charTyped(event);
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        if (event.button() == 0) {
+            int listX = (this.width - LIST_WIDTH) / 2;
+            int listTop = searchBox.getY() + SEARCH_HEIGHT + GAP;
+            double mouseX = event.x();
+            double mouseY = event.y();
+            if (mouseX >= listX && mouseX <= listX + LIST_WIDTH && mouseY >= listTop && mouseY <= listTop + MAX_VISIBLE_ROWS * ROW_HEIGHT) {
+                int clickedIndex = (int) (mouseY - listTop + scrollOffset) / ROW_HEIGHT;
+                if (clickedIndex >= 0 && clickedIndex < filteredItems.size()) {
+                    selectedIndex = clickedIndex;
+                    selectCurrent();
+                    return true;
+                }
+            }
+        }
+        return super.mouseClicked(event, doubleClick);
     }
 
     @Override
@@ -177,10 +218,9 @@ public class QuickTakeScreen extends Screen {
     }
 
     private void ensureVisible() {
-        int listTop = searchBox.getY() + SEARCH_HEIGHT + GAP;
+        int maxScroll = filteredItems.size() * ROW_HEIGHT - MAX_VISIBLE_ROWS * ROW_HEIGHT;
         int itemTop = selectedIndex * ROW_HEIGHT;
         int itemBottom = itemTop + ROW_HEIGHT;
-        int maxScroll = filteredItems.size() * ROW_HEIGHT - MAX_VISIBLE_ROWS * ROW_HEIGHT;
         if (itemTop < scrollOffset) {
             scrollOffset = itemTop;
         } else if (itemBottom > scrollOffset + MAX_VISIBLE_ROWS * ROW_HEIGHT) {
@@ -195,13 +235,19 @@ public class QuickTakeScreen extends Screen {
         if (text.isBlank()) {
             filteredItems.addAll(allItems);
         } else {
+            List<AbstractMap.SimpleEntry<ItemStack, Float>> scored = new ArrayList<>();
             for (ItemStack stack : allItems) {
-                if (ItemMatcher.matches(stack, text)) {
-                    filteredItems.add(stack);
+                float score = ItemMatcher.matchPriority(stack, text);
+                if (score > 0) {
+                    scored.add(new AbstractMap.SimpleEntry<>(stack, score));
                 }
             }
+            scored.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
+            for (var entry : scored) {
+                filteredItems.add(entry.getKey());
+            }
         }
-        selectedIndex = filteredItems.isEmpty() ? 0 : 0;
+        selectedIndex = 0;
         scrollOffset = 0;
     }
 }
