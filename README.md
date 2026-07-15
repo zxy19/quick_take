@@ -4,6 +4,8 @@
 
 A client-side NeoForge mod that adds a **Spotlight/Alfred-like quick item search** interface for Creative Mode. Quickly find and select any item by typing its name, registry ID, or tooltip text.
 
+![Demo](demo.gif)
+
 ## Features
 
 - **Instant item search** — Press `R` (configurable) to open a full-screen search overlay while in Creative Mode
