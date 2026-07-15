@@ -9,17 +9,17 @@ import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
-import net.minecraft.world.item.CreativeModeTab;
-import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.ItemStack;
-import net.neoforged.neoforge.common.CreativeModeTabRegistry;
 import studio.fantasyit.quick_take.helper.InventoryHandler;
+import studio.fantasyit.quick_take.helper.ItemCache;
 import studio.fantasyit.quick_take.helper.ItemMatcher;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class QuickTakeScreen extends Screen {
     private static final int LIST_WIDTH = 200;
@@ -29,11 +29,14 @@ public class QuickTakeScreen extends Screen {
     private static final int GAP = 4;
 
     private EditBox searchBox;
-    private final List<ItemStack> allItems = new ArrayList<>();
+    private final List<ItemMatcher.ItemMatchEntry> entries = new ArrayList<>();
     private final List<ItemStack> filteredItems = new ArrayList<>();
     private int selectedIndex;
     private int scrollOffset;
     private final String initialText;
+    private int filterVersion;
+    private ExecutorService executor;
+    private Future<?> currentTask;
 
     public QuickTakeScreen() {
         this("");
@@ -46,6 +49,13 @@ public class QuickTakeScreen extends Screen {
 
     @Override
     protected void init() {
+        if (executor == null) {
+            executor = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "QuickTake-Filter");
+                t.setDaemon(true);
+                return t;
+            });
+        }
         int listX = (this.width - LIST_WIDTH) / 2;
         int listY = (this.height - (SEARCH_HEIGHT + GAP + MAX_VISIBLE_ROWS * ROW_HEIGHT)) / 2;
 
@@ -58,30 +68,22 @@ public class QuickTakeScreen extends Screen {
             this.searchBox.setValue(initialText);
         }
 
-        if (allItems.isEmpty()) {
-            CreativeModeTabs.tryRebuildTabContents(
-                    minecraft.level.enabledFeatures(),
-                    minecraft.player.canUseGameMasterBlocks(),
-                    minecraft.level.registryAccess()
-            );
-            List<CreativeModeTab> allTabs = CreativeModeTabRegistry.getSortedCreativeModeTabs().stream()
-                    .filter(t -> t.getType() == CreativeModeTab.Type.CATEGORY)
-                    .filter(CreativeModeTab::shouldDisplay)
-                    .toList();
-            for (CreativeModeTab tab : allTabs) {
-                Collection<ItemStack> items = tab.getDisplayItems();
-                for (ItemStack stack : items) {
-                    if (!stack.isEmpty()) {
-                        allItems.add(stack);
-                    }
-                }
-            }
+        if (entries.isEmpty()) {
+            entries.addAll(ItemCache.getOrBuild(minecraft));
         }
 
         filteredItems.clear();
-        filteredItems.addAll(allItems);
+        for (var entry : entries) {
+            filteredItems.add(entry.stack());
+        }
         selectedIndex = 0;
         scrollOffset = 0;
+    }
+
+    @Override
+    public void onClose() {
+        cancelTask();
+        super.onClose();
     }
 
     @Override
@@ -231,23 +233,89 @@ public class QuickTakeScreen extends Screen {
 
     private void updateFilter() {
         String text = this.searchBox.getValue();
-        filteredItems.clear();
         if (text.isBlank()) {
-            filteredItems.addAll(allItems);
-        } else {
-            List<AbstractMap.SimpleEntry<ItemStack, Float>> scored = new ArrayList<>();
-            for (ItemStack stack : allItems) {
-                float score = ItemMatcher.matchPriority(stack, text);
+            cancelTask();
+            filterVersion++;
+            filteredItems.clear();
+            for (var entry : entries) {
+                filteredItems.add(entry.stack());
+            }
+            selectedIndex = 0;
+            scrollOffset = 0;
+            return;
+        }
+        cancelTask();
+        final int version = ++filterVersion;
+        final List<ItemMatcher.ItemMatchEntry> entryList = List.copyOf(entries);
+        currentTask = executor.submit(() -> {
+            List<AbstractMap.SimpleEntry<ItemStack, Float>> phase1 = new ArrayList<>();
+            for (var entry : entryList) {
+                if (Thread.interrupted()) return;
+                float score = ItemMatcher.matchPriorityName(entry, text);
                 if (score > 0) {
-                    scored.add(new AbstractMap.SimpleEntry<>(stack, score));
+                    phase1.add(new AbstractMap.SimpleEntry<>(entry.stack(), score));
                 }
             }
-            scored.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
-            for (var entry : scored) {
-                filteredItems.add(entry.getKey());
+            phase1.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
+            final List<AbstractMap.SimpleEntry<ItemStack, Float>> phase1Result = List.copyOf(phase1);
+            minecraft.execute(() -> {
+                if (version != filterVersion) return;
+                filteredItems.clear();
+                for (var e : phase1Result) {
+                    filteredItems.add(e.getKey());
+                }
+                selectedIndex = 0;
+                scrollOffset = 0;
+            });
+
+            if (Thread.interrupted()) return;
+            List<AbstractMap.SimpleEntry<ItemStack, Float>> phase2 = new ArrayList<>();
+            for (var entry : entryList) {
+                if (Thread.interrupted()) return;
+                if (phase1.stream().anyMatch(e -> e.getKey() == entry.stack())) {
+                    continue;
+                }
+                float score = ItemMatcher.matchPriorityId(entry, text);
+                if (score > 0) {
+                    phase2.add(new AbstractMap.SimpleEntry<>(entry.stack(), score));
+                }
             }
+            phase2.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
+            final List<AbstractMap.SimpleEntry<ItemStack, Float>> phase2Result = List.copyOf(phase2);
+            minecraft.execute(() -> {
+                if (version != filterVersion) return;
+                for (var e : phase2Result) {
+                    filteredItems.add(e.getKey());
+                }
+            });
+
+            if (Thread.interrupted()) return;
+            List<AbstractMap.SimpleEntry<ItemStack, Float>> phase3 = new ArrayList<>();
+            for (var entry : entryList) {
+                if (Thread.interrupted()) return;
+                if (phase1.stream().anyMatch(e -> e.getKey() == entry.stack())
+                        || phase2.stream().anyMatch(e -> e.getKey() == entry.stack())) {
+                    continue;
+                }
+                float score = ItemMatcher.matchPriorityTooltip(entry, text);
+                if (score > 0) {
+                    phase3.add(new AbstractMap.SimpleEntry<>(entry.stack(), score));
+                }
+            }
+            phase3.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
+            final List<AbstractMap.SimpleEntry<ItemStack, Float>> phase3Result = List.copyOf(phase3);
+            minecraft.execute(() -> {
+                if (version != filterVersion) return;
+                for (var e : phase3Result) {
+                    filteredItems.add(e.getKey());
+                }
+            });
+        });
+    }
+
+    private void cancelTask() {
+        if (currentTask != null && !currentTask.isDone()) {
+            currentTask.cancel(true);
         }
-        selectedIndex = 0;
-        scrollOffset = 0;
     }
 }

@@ -13,21 +13,9 @@ import java.util.List;
 
 public class ItemMatcher {
 
-    public static boolean matches(ItemStack stack, String pattern) {
-        if (pattern.isBlank()) {
-            return true;
-        }
-        String[] subPatterns = pattern.toLowerCase().split(" ");
-        List<String> matchTexts = getMatchTexts(stack);
-        for (String sub : subPatterns) {
-            if (!matchesAny(matchTexts, sub) && !JechIntegration.tryMatch(stack, sub)) {
-                return false;
-            }
-        }
-        return true;
-    }
+    public record ItemMatchEntry(ItemStack stack, List<String> matchTexts) {}
 
-    public static float matchPriority(ItemStack stack, String pattern) {
+    public static float matchPriority(ItemMatchEntry entry, String pattern) {
         if (pattern.isBlank()) {
             return 1.0f;
         }
@@ -35,17 +23,91 @@ public class ItemMatcher {
         float minScore = 1.0f;
         for (String sub : subPatterns) {
             float best = 0;
-            for (String text : getMatchTexts(stack)) {
-                float s = subsequenceScore(sub, text);
+            List<String> texts = entry.matchTexts();
+            for (int ti = 0; ti < texts.size(); ti++) {
+                float s = subsequenceScore(sub, texts.get(ti));
+                if (ti > 0 && ti < texts.size() - 1) {
+                    s *= 0.01f;
+                }
                 if (s > best) best = s;
             }
-            if (best == 0 && JechIntegration.tryMatch(stack, sub)) {
+            if (best == 0 && JechIntegration.tryMatch(entry.stack(), sub)) {
                 best = 1.0f;
             }
             if (best == 0) return 0;
             if (best < minScore) minScore = best;
         }
         return minScore;
+    }
+
+    public static float matchPriorityName(ItemMatchEntry entry, String pattern) {
+        if (pattern.isBlank()) {
+            return 1.0f;
+        }
+        String[] subPatterns = pattern.toLowerCase().split(" ");
+        float totalScore = 0;
+        List<String> texts = entry.matchTexts();
+        String name = texts.get(0);
+        int nameLen = name.length();
+        for (String sub : subPatterns) {
+            float best = subsequenceScore(sub, name);
+            if (best == 0) {
+                best = JechIntegration.tryMatchName(entry.stack(), sub);
+            }
+            if (best == 0) return 0;
+            totalScore += best * ((float) sub.length() / nameLen);
+        }
+        return totalScore;
+    }
+
+    public static float matchPriorityId(ItemMatchEntry entry, String pattern) {
+        if (pattern.isBlank()) {
+            return 1.0f;
+        }
+        String[] subPatterns = pattern.toLowerCase().split(" ");
+        float totalScore = 0;
+        List<String> texts = entry.matchTexts();
+        String id = texts.get(texts.size() - 1);
+        int idLen = id.length();
+        for (String sub : subPatterns) {
+            float best = subsequenceScore(sub, id);
+            if (best == 0) {
+                best = JechIntegration.tryMatchName(entry.stack(), sub);
+            }
+            if (best == 0) return 0;
+            totalScore += best * ((float) sub.length() / idLen);
+        }
+        return totalScore;
+    }
+
+    public static float matchPriorityTooltip(ItemMatchEntry entry, String pattern) {
+        if (pattern.isBlank()) {
+            return 1.0f;
+        }
+        String[] subPatterns = pattern.toLowerCase().split(" ");
+        float totalScore = 0;
+        List<String> texts = entry.matchTexts();
+        for (String sub : subPatterns) {
+            float best = 0;
+            int bestTi = 0;
+            for (int ti = 1; ti < texts.size() - 1; ti++) {
+                float s = subsequenceScore(sub, texts.get(ti));
+                if (s > best) {
+                    best = s;
+                    bestTi = ti;
+                }
+            }
+            if (best == 0) {
+                best = JechIntegration.tryMatchTooltip(entry.stack(), sub);
+            }
+            if (best == 0) return 0;
+            totalScore += best * ((float) sub.length() / texts.get(bestTi).length());
+        }
+        return totalScore;
+    }
+
+    public static boolean matches(ItemMatchEntry entry, String pattern) {
+        return matchPriority(entry, pattern) > 0;
     }
 
     private static float subsequenceScore(String pattern, String text) {
@@ -69,26 +131,7 @@ public class ItemMatcher {
         return (float) maxConsecutive / pattern.length();
     }
 
-    private static boolean matchesAny(List<String> texts, String pattern) {
-        for (String text : texts) {
-            if (isSubsequence(pattern, text)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isSubsequence(String pattern, String text) {
-        int pi = 0;
-        for (int ti = 0; ti < text.length() && pi < pattern.length(); ti++) {
-            if (text.charAt(ti) == pattern.charAt(pi)) {
-                pi++;
-            }
-        }
-        return pi == pattern.length();
-    }
-
-    private static List<String> getMatchTexts(ItemStack stack) {
+    public static List<String> getMatchTexts(ItemStack stack) {
         List<String> texts = new ArrayList<>();
         texts.add(stack.getHoverName().getString().toLowerCase());
         for (Component line : getTooltipLines(stack)) {
